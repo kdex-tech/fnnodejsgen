@@ -1,43 +1,14 @@
 {
-  "name": "@kdex-tech/fnnodejsgen",
-  "version": "0.1.0",
-  "description": "OpenAPI-driven scaffolding generator for Node.js / TypeScript KDex functions. TS sibling of kdex-fngogen.",
-  "type": "module",
+  "author": "KDex Tech",
   "bin": {
     "kdex-fnnodejsgen": "dist/cli.js"
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
-    "start": "node dist/cli.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "eslint src",
-    "prepublishOnly": "npm run build"
-  },
-  "keywords": [
-    "kdex",
-    "openapi",
-    "codegen",
-    "fastify",
-    "knative"
-  ],
-  "author": "KDex Tech",
-  "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kdex-tech/fnnodejsgen.git"
-  },
-  "engines": {
-    "node": ">=22"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^11.0.0",
     "openapi-typescript": "^7.5.0",
     "prettier": "^3.4.0"
   },
+  "description": "OpenAPI-driven scaffolding generator for Node.js / TypeScript KDex functions. TS sibling of kdex-fngogen.",
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
@@ -46,5 +17,34 @@
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0",
     "vitest": "^4.0.0"
-  }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "kdex",
+    "openapi",
+    "codegen",
+    "fastify",
+    "knative"
+  ],
+  "license": "Apache-2.0",
+  "name": "@kdex-tech/fnnodejsgen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kdex-tech/fnnodejsgen.git"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "lint": "eslint src",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "type": "module",
+  "version": "0.1.1"
 }
