@@ -1,0 +1,21 @@
+FROM node:22-alpine AS builder
+WORKDIR /build
+COPY package.json package-lock.json* tsconfig.json tsconfig.build.json ./
+RUN npm ci --no-audit --no-fund
+COPY src ./src
+RUN npx tsc -p tsconfig.build.json && \
+    chmod +x dist/cli.js && \
+    npm prune --omit=dev
+
+FROM node:22-alpine
+RUN apk add --no-cache tree bash
+WORKDIR /opt/kdex-fnnodejsgen
+COPY --from=builder /build/node_modules ./node_modules
+COPY --from=builder /build/dist ./dist
+COPY --from=builder /build/package.json ./
+COPY src/runtime-snippets ./src/runtime-snippets
+RUN ln -s /opt/kdex-fnnodejsgen/dist/cli.js /usr/local/bin/kdex-fnnodejsgen && \
+    chmod +x /opt/kdex-fnnodejsgen/dist/cli.js
+COPY entry-point.sh /usr/local/bin/entry-point.sh
+RUN chmod +x /usr/local/bin/entry-point.sh
+ENTRYPOINT ["/usr/local/bin/entry-point.sh"]
