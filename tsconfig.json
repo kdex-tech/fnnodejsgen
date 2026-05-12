@@ -19,6 +19,5 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/runtime-snippets/**/*"]
+  "include": ["src/**/*.ts"]
 }

@@ -7,8 +7,7 @@
     "kdex-fnnodejsgen": "dist/cli.js"
   },
   "files": [
-    "dist",
-    "src/runtime-snippets"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",

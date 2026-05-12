@@ -13,7 +13,6 @@ WORKDIR /opt/kdex-fnnodejsgen
 COPY --from=builder /build/node_modules ./node_modules
 COPY --from=builder /build/dist ./dist
 COPY --from=builder /build/package.json ./
-COPY src/runtime-snippets ./src/runtime-snippets
 RUN ln -s /opt/kdex-fnnodejsgen/dist/cli.js /usr/local/bin/kdex-fnnodejsgen && \
     chmod +x /opt/kdex-fnnodejsgen/dist/cli.js
 COPY entry-point.sh /usr/local/bin/entry-point.sh
