@@ -16,7 +16,7 @@ export function emitPackageJson(ir: IR): string {
   if (usesAuth) {
     dependencies.jose = "^5.9.0";
     dependencies["fastify-plugin"] = "^5.0.0";
-    dependencies["@kdex-tech/entitlements"] = "^0.1.0";
+    dependencies["@kdex-tech/entitlements"] = "^0.1.23";
   }
   if (usesPaseto) {
     dependencies.paseto = "^3.1.4";
