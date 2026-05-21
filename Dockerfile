@@ -26,4 +26,17 @@ RUN ln -s /opt/kdex-fnnodejsgen/dist/cli.js /usr/local/bin/kdex-fnnodejsgen && \
     chmod +x /opt/kdex-fnnodejsgen/dist/cli.js
 COPY entry-point.sh /usr/local/bin/entry-point.sh
 RUN chmod +x /usr/local/bin/entry-point.sh
+
+# Pre-create npm's HOME-derived cache + userconfig paths as
+# world-writable. Without this, the FIRST `npm install` from
+# entry-point.sh works (it creates /tmp/.npm fresh as the
+# runtime user), but if the docker build ever pre-populates
+# /tmp/.npm or /tmp/.config as root (e.g. via a future
+# `npm cache prune` step in this image), the non-root runtime
+# user couldn't extend those subtrees — same failure shape as
+# the fngogen GOPATH issue. Defensive symmetry with
+# kdex-tech/fngogen#1's chmod 0777 of /tmp/.cache + /tmp/go.
+RUN mkdir -p /tmp/.npm /tmp/.config/npm /tmp/.cache && \
+    chmod -R 0777 /tmp/.npm /tmp/.config /tmp/.cache
+
 ENTRYPOINT ["/usr/local/bin/entry-point.sh"]
