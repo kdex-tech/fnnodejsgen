@@ -9,6 +9,15 @@ RUN npx tsc -p tsconfig.build.json && \
 
 FROM node:22-alpine
 RUN apk add --no-cache tree bash
+
+# Default HOME is / (root-owned). Codegen Jobs run this image as a
+# non-root user (UID 65532 under host-manager's PSSRestricted pod
+# spec); npm uses $HOME for cache (.npm) and userconfig (.config/npm)
+# defaults, so without this every `npm install` / `npx tsc` from
+# entry-point.sh fails with "EACCES: permission denied, mkdir
+# '/.npm'". /tmp is always writable. See kdex-tech/fnnodejsgen#1.
+ENV HOME=/tmp
+
 WORKDIR /opt/kdex-fnnodejsgen
 COPY --from=builder /build/node_modules ./node_modules
 COPY --from=builder /build/dist ./dist
