@@ -110,11 +110,21 @@ function decodePasetoFooter(token: string): { kid: string } | undefined {
 }
 
 async function verifyPaseto(token: string): Promise<Record<string, unknown>> {
-  const footer = decodePasetoFooter(token);
+  // White-label: the host may have replaced the PASETO "v4.public." header with
+  // its brand prefix (PASETO_TOKEN_PREFIX). Restore the header before parsing so
+  // the signature verifies. A token already starting with "v4.public." is bare
+  // and left untouched; otherwise, if it carries the configured prefix, swap it
+  // back. Empty prefix => no transformation.
+  const tokenPrefix = process.env.PASETO_TOKEN_PREFIX ?? "";
+  const pasetoToken =
+    tokenPrefix && !token.startsWith("v4.public.") && token.startsWith(tokenPrefix)
+      ? "v4.public." + token.slice(tokenPrefix.length)
+      : token;
+  const footer = decodePasetoFooter(pasetoToken);
   if (!footer) throw new Error("PASETO token missing kid footer");
   const publicKey = await pasetoKeyFor(footer.kid);
   // The \`paseto\` package's V4.verify validates audience/issuer claims.
-  const claims = (await paseto.V4.verify(token, publicKey, {
+  const claims = (await paseto.V4.verify(pasetoToken, publicKey, {
     audience,
     issuer,
   })) as Record<string, unknown>;
