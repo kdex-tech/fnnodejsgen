@@ -39,32 +39,6 @@ export function refToSchemaName(ref: string | undefined): string | undefined {
   return ref.startsWith(prefix) ? ref.slice(prefix.length) : undefined;
 }
 
-function parseSecurityScheme(name: string, raw: unknown): SecurityScheme | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const r = raw as Record<string, unknown>;
-  const type = r.type;
-  if (type === "http" && r.scheme === "bearer") {
-    return { kind: "bearer", bearerFormat: r.bearerFormat as string | undefined };
-  }
-  if (type === "oauth2") {
-    return { kind: "oauth2", flows: r.flows };
-  }
-  if (type === "openIdConnect") {
-    return {
-      kind: "openIdConnect",
-      openIdConnectUrl: r.openIdConnectUrl as string | undefined,
-    };
-  }
-  if (type === "apiKey") {
-    const where = r.in;
-    if (where !== "header" && where !== "query" && where !== "cookie") return undefined;
-    return { kind: "apiKey", in: where, name: r.name as string };
-  }
-  // Unknown scheme — warn the caller via undefined.
-  void name;
-  return undefined;
-}
-
 function flagsForSchemes(schemes: Record<string, SecurityScheme>): SecurityFlags {
   const flags: SecurityFlags = {
     hasSecurity: false,
@@ -165,6 +139,29 @@ function parseSecurity(raw: unknown): SecurityRequirement[] {
   return out;
 }
 
+/** Normalize security alternatives to bearer-only. Generated functions accept
+ * only the host-minted JWT (FAT) and authorize on its `entitlements` claim, so
+ * whatever scheme an alternative was declared under, the function side sees a
+ * bearer. Each non-empty alternative becomes `{bearer: union of its scopes}`
+ * (scheme names sorted, first occurrence kept: same rule as fngogen's
+ * `unionAlternative`). `{}` alternatives (anonymous) stay and go last, so a
+ * valid FAT populates claims before the empty alternative admits. */
+export function bearerOnly(reqs: SecurityRequirement[]): SecurityRequirement[] {
+  const nonEmpty: SecurityRequirement[] = [];
+  const empty: SecurityRequirement[] = [];
+  for (const req of reqs) {
+    const names = Object.keys(req).sort();
+    if (names.length === 0) {
+      empty.push({});
+      continue;
+    }
+    const union = new Set<string>();
+    for (const name of names) for (const scope of req[name] ?? []) union.add(scope);
+    nonEmpty.push({ bearer: [...union] });
+  }
+  return [...nonEmpty, ...empty];
+}
+
 /** Load the OpenAPI document at `specPath` and produce an IR. The document is
  * parsed (not dereferenced) so `$ref` survives for schema-by-name emission. */
 export async function parseSpec(specPath: string): Promise<IR> {
@@ -172,14 +169,6 @@ export async function parseSpec(specPath: string): Promise<IR> {
 
   const components = (api.components as Record<string, unknown> | undefined) ?? {};
   const componentSchemas = (components.schemas as Record<string, unknown> | undefined) ?? {};
-  const componentSecuritySchemes =
-    (components.securitySchemes as Record<string, unknown> | undefined) ?? {};
-
-  const securitySchemes: Record<string, SecurityScheme> = {};
-  for (const [name, raw] of Object.entries(componentSecuritySchemes)) {
-    const scheme = parseSecurityScheme(name, raw);
-    if (scheme) securitySchemes[name] = scheme;
-  }
 
   const operations: Operation[] = [];
   const paths = (api.paths as Record<string, unknown> | undefined) ?? {};
@@ -219,13 +208,20 @@ export async function parseSpec(specPath: string): Promise<IR> {
         parameters: mergedParams,
         requestBody: parseBody(op.requestBody, false),
         responses,
-        security: parseSecurity(op.security),
+        security: bearerOnly(parseSecurity(op.security)),
         summary: op.summary as string | undefined,
         description: op.description as string | undefined,
         tags: Array.isArray(op.tags) ? (op.tags as unknown[]).map(String) : [],
       });
     }
   }
+
+  // Every surviving alternative is bearer, so the only scheme is `bearer`; the
+  // declared components.securitySchemes no longer shape the function side.
+  const hasSecurity = operations.some((o) => o.security.some((r) => Object.keys(r).length > 0));
+  const securitySchemes: Record<string, SecurityScheme> = hasSecurity
+    ? { bearer: { kind: "bearer" } }
+    : {};
 
   const info = (api.info as Record<string, unknown> | undefined) ?? {};
   return {

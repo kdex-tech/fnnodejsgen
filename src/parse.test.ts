@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSpec, refToSchemaName, toMethodName } from "./parse.js";
+import { bearerOnly, parseSpec, refToSchemaName, toMethodName } from "./parse.js";
 
 describe("toMethodName", () => {
   it("camelCases hyphenated ids", () => {
@@ -53,34 +53,38 @@ describe("parseSpec — bearer fixture", () => {
 });
 
 describe("parseSpec — apikey-header fixture", () => {
-  it("flags apiKey-header only", async () => {
+  it("normalizes apiKey-header to bearer", async () => {
     const ir = await parseSpec("test-fixtures/openapi-spec-apikey-header.json");
-    expect(ir.securityFlags.apiKeyHeader).toBe(true);
+    expect(ir.securityFlags.apiKeyHeader).toBe(false);
     expect(ir.securityFlags.apiKeyQuery).toBe(false);
     expect(ir.securityFlags.apiKeyCookie).toBe(false);
-    expect(ir.securityFlags.bearer).toBe(false);
+    expect(ir.securityFlags.bearer).toBe(true);
+    expect(ir.securitySchemes).toEqual({ bearer: { kind: "bearer" } });
+    expect(ir.operations[0]!.security).toEqual([{ bearer: [] }]);
   });
 });
 
 describe("parseSpec — apikey-cookie fixture", () => {
-  it("flags apiKey-cookie only", async () => {
+  it("normalizes apiKey-cookie to bearer", async () => {
     const ir = await parseSpec("test-fixtures/openapi-spec-apikey-cookie.json");
-    expect(ir.securityFlags.apiKeyCookie).toBe(true);
+    expect(ir.securityFlags.apiKeyCookie).toBe(false);
     expect(ir.securityFlags.apiKeyHeader).toBe(false);
   });
 });
 
 describe("parseSpec — oauth2 fixture", () => {
-  it("flags oauth2", async () => {
+  it("normalizes oauth2 to bearer", async () => {
     const ir = await parseSpec("test-fixtures/openapi-spec-oauth2.json");
-    expect(ir.securityFlags.oauth2).toBe(true);
+    expect(ir.securityFlags.oauth2).toBe(false);
+    expect(ir.securityFlags.bearer).toBe(true);
   });
 });
 
 describe("parseSpec — openIdConnect fixture", () => {
-  it("flags openIdConnect", async () => {
+  it("normalizes openIdConnect to bearer", async () => {
     const ir = await parseSpec("test-fixtures/openapi-spec-openIdConnect.json");
-    expect(ir.securityFlags.openIdConnect).toBe(true);
+    expect(ir.securityFlags.openIdConnect).toBe(false);
+    expect(ir.securityFlags.bearer).toBe(true);
   });
 });
 
@@ -89,5 +93,23 @@ describe("parseSpec — bearer-2 fixture", () => {
     const ir = await parseSpec("test-fixtures/openapi-spec-bearer-2.json");
     expect(ir.operations).toHaveLength(2);
     expect(ir.operations.map((o) => o.method).sort()).toEqual(["get", "put"]);
+  });
+});
+
+describe("bearerOnly", () => {
+  it("unions an alternative's schemes under bearer, sorted by scheme name", () => {
+    expect(bearerOnly([{ oauth2: ["b", "a"], apiKeyHeader: ["a", "c"] }])).toEqual([
+      { bearer: ["a", "c", "b"] },
+    ]);
+  });
+  it("puts empty alternatives last", () => {
+    expect(bearerOnly([{}, { oidc: ["x"] }])).toEqual([{ bearer: ["x"] }, {}]);
+  });
+  it("leaves bearer-only alternatives unchanged", () => {
+    const reqs = [{ bearer: ["a"] }, { bearer: ["b", "c"] }];
+    expect(bearerOnly(reqs)).toEqual(reqs);
+  });
+  it("maps a scopeless scheme to an empty bearer", () => {
+    expect(bearerOnly([{ x: [] }])).toEqual([{ bearer: [] }]);
   });
 });

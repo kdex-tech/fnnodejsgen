@@ -84,13 +84,13 @@ describe("CLI — Service interface shape", () => {
 });
 
 describe("CLI — security.gen.ts reflects the spec", () => {
-  it("apikey-cookie fixture emits apiKeyCookie:true and bearer:false", async () => {
+  it("apikey-cookie fixture is normalized to apiKeyCookie:false and bearer:true", async () => {
     const target = makeTarget("apikey-cookie-sec");
     try {
       await run({ spec: join(FIXTURES, "openapi-spec-apikey-cookie.json"), target });
       const security = readFileSync(join(target, "api/security.gen.ts"), "utf8");
-      expect(security).toMatch(/apiKeyCookie: true/);
-      expect(security).toMatch(/bearer: false/);
+      expect(security).toMatch(/apiKeyCookie: false/);
+      expect(security).toMatch(/bearer: true/);
     } finally {
       rmSync(target, { recursive: true, force: true });
     }
