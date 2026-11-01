@@ -97,6 +97,29 @@ describe("CLI — security.gen.ts reflects the spec", () => {
   });
 });
 
+describe("CLI — auth.ts reads entitlements for every JWT scheme", () => {
+  // kdex-tech/fngogen#18: oauth2/openIdConnect read a `scopes` claim no
+  // host-minted token carries, so every oauth2-only operation refused every
+  // caller. The host gate authorizes them on `entitlements`; `scope` is what
+  // the client asked for and must not stand in.
+  for (const fixture of ["openapi-spec-oauth2.json", "openapi-spec-openIdConnect.json"]) {
+    it(`${fixture} maps its scheme to the entitlements claim`, async () => {
+      const target = makeTarget(`${fixture.replace(/\W/g, "-")}-claim`);
+      try {
+        await run({ spec: join(FIXTURES, fixture), target });
+        const auth = readFileSync(join(target, "src/auth.ts"), "utf8");
+        const fn = (auth.match(/function claimKeyForScheme[\s\S]*?\n}/)?.[0] ?? "").replace(/\/\/.*$/gm, "");
+        expect(fn).not.toBe("");
+        expect(fn).not.toMatch(/"scopes?"/);
+        expect(fn).not.toMatch(/oauth2|openIdConnect/);
+        expect(fn).toMatch(/return "entitlements";/);
+      } finally {
+        rmSync(target, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe("CLI — overwrite policy", () => {
   it("preserves src/custom.ts but refreshes the generated files on re-run", async () => {
     const target = makeTarget("regen");

@@ -168,9 +168,10 @@ function entitlementsFromClaims(claims: Record<string, unknown>, claimKey: strin
 }
 
 function claimKeyForScheme(kind: string): string {
-  // Bearer uses "entitlements" per the Go reference; oauth2/oidc use "scopes";
-  // apiKey (PASETO) uses "scp".
-  if (kind === "oauth2" || kind === "openIdConnect") return "scopes";
+  // Every JWT scheme (bearer, oauth2, openIdConnect) uses "entitlements", as
+  // the host gate does: never "scope", which is what the client asked for (a
+  // client_credentials grant's scope is not filtered). See
+  // kdex-tech/fngogen#18. apiKey (PASETO) uses "scp".
   if (kind === "apiKey") return "scp";
   return "entitlements";
 }
