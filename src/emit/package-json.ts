@@ -3,12 +3,7 @@ import type { IR } from "../types.js";
 /** Emit `package.json` for the generated function. Written only when no
  * package.json exists yet — preserved on regen so user can add deps. */
 export function emitPackageJson(ir: IR): string {
-  const usesPaseto =
-    ir.securityFlags.apiKeyHeader ||
-    ir.securityFlags.apiKeyQuery ||
-    ir.securityFlags.apiKeyCookie;
   const usesAuth = ir.securityFlags.hasSecurity;
-  const usesCookieScheme = ir.securityFlags.apiKeyCookie;
 
   const dependencies: Record<string, string> = {
     fastify: "^5.0.0",
@@ -17,12 +12,6 @@ export function emitPackageJson(ir: IR): string {
     dependencies.jose = "^5.9.0";
     dependencies["fastify-plugin"] = "^5.0.0";
     dependencies["@kdex-tech/entitlements"] = "^0.1.23";
-  }
-  if (usesPaseto) {
-    dependencies.paseto = "^3.1.4";
-  }
-  if (usesCookieScheme) {
-    dependencies["@fastify/cookie"] = "^11.0.0";
   }
 
   const pkg = {

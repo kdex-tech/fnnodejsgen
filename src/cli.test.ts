@@ -97,27 +97,61 @@ describe("CLI — security.gen.ts reflects the spec", () => {
   });
 });
 
-describe("CLI — auth.ts reads entitlements for every JWT scheme", () => {
-  // kdex-tech/fngogen#18: oauth2/openIdConnect read a `scopes` claim no
-  // host-minted token carries, so every oauth2-only operation refused every
-  // caller. The host gate authorizes them on `entitlements`; `scope` is what
-  // the client asked for and must not stand in.
-  for (const fixture of ["openapi-spec-oauth2.json", "openapi-spec-openIdConnect.json"]) {
-    it(`${fixture} maps its scheme to the entitlements claim`, async () => {
-      const target = makeTarget(`${fixture.replace(/\W/g, "-")}-claim`);
+describe("CLI — auth.ts verifies only the FAT bearer token", () => {
+  // kdex-tech/fngogen#18: a function accepts only the host-minted JWT (FAT)
+  // from `Authorization: Bearer` and authorizes on its `entitlements` claim.
+  // PASETO, apiKey, cookie and `scope`/`scopes`/`scp` claims never apply.
+  const FORBIDDEN = /paseto|verifyPaseto|"scp"|"scopes?"|X-API-TOKEN|api_token/;
+  const stripComments = (src: string): string =>
+    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+  for (const fixture of [
+    "openapi-spec-oauth2.json",
+    "openapi-spec-openIdConnect.json",
+    "openapi-spec-apikey-header.json",
+    "openapi-spec-apikey-cookie.json",
+    "openapi-spec-apikey-query.json",
+  ]) {
+    it(`${fixture} emits a bearer-only auth.ts reading entitlements`, async () => {
+      const target = makeTarget(`${fixture.replace(/\W/g, "-")}-fat`);
       try {
         await run({ spec: join(FIXTURES, fixture), target });
-        const auth = readFileSync(join(target, "src/auth.ts"), "utf8");
-        const fn = (auth.match(/function claimKeyForScheme[\s\S]*?\n}/)?.[0] ?? "").replace(/\/\/.*$/gm, "");
-        expect(fn).not.toBe("");
-        expect(fn).not.toMatch(/"scopes?"/);
-        expect(fn).not.toMatch(/oauth2|openIdConnect/);
-        expect(fn).toMatch(/return "entitlements";/);
+        const auth = stripComments(readFileSync(join(target, "src/auth.ts"), "utf8"));
+        expect(auth).not.toMatch(FORBIDDEN);
+        expect(auth).not.toMatch(/claimKeyForScheme|cookies?\b/i);
+        // The emitted source is prettier-formatted, so tolerate wrapping.
+        expect(auth).toMatch(/entitlementsFromClaims\(\s*claims,\s*"entitlements",?\s*\)/);
+        const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+        expect(pkg.dependencies).not.toHaveProperty("paseto");
+        expect(pkg.dependencies).not.toHaveProperty("@fastify/cookie");
+        expect(pkg.dependencies).toHaveProperty("jose");
       } finally {
         rmSync(target, { recursive: true, force: true });
       }
     });
   }
+
+  it("declared securitySchemes without operation-level security yield no auth plugin", async () => {
+    const target = makeTarget("schemes-no-op-security");
+    const spec = join(target, "spec.json");
+    try {
+      const doc = JSON.parse(readFileSync(join(FIXTURES, "openapi-spec-bearer.json"), "utf8"));
+      delete doc.security;
+      for (const item of Object.values(doc.paths) as Record<string, Record<string, unknown>>[]) {
+        for (const op of Object.values(item)) {
+          if (op && typeof op === "object") delete op.security;
+        }
+      }
+      expect(doc.components.securitySchemes).toBeDefined();
+      writeFileSync(spec, JSON.stringify(doc), "utf8");
+      await run({ spec, target });
+      expect(readFileSync(join(target, "src/auth.ts"), "utf8")).toMatch(/no securitySchemes/);
+      const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+      expect(pkg.dependencies).not.toHaveProperty("jose");
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("CLI — overwrite policy", () => {
@@ -199,6 +233,14 @@ describe("CLI — emitted code passes tsc --noEmit", () => {
     { timeout: 120_000 },
     () => {
       tscOnFixture("openapi-spec-bearer.json");
+    },
+  );
+
+  it.runIf(existsSync(ENTITLEMENTS_TARBALL) && existsSync(resolve(REPO_ROOT, "dist/cli.js")))(
+    "openapi-spec-apikey-header.json (normalized to bearer)",
+    { timeout: 120_000 },
+    () => {
+      tscOnFixture("openapi-spec-apikey-header.json");
     },
   );
 });
