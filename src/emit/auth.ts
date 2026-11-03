@@ -73,10 +73,19 @@ async function verifyJwt(token: string): Promise<Record<string, unknown>> {
 function extractToken(request: FastifyRequest): string | undefined {
   const header = request.headers["authorization"];
   if (typeof header !== "string") return undefined;
-  // The scheme is case-insensitive (RFC 9110), as ogen's EqualFold is in
-  // kdex-fngogen.
-  const match = /^bearer\\s+(.+)$/i.exec(header);
+  // As ogen's findAuthorization parses it for kdex-fngogen: cut on the first
+  // single space, and compare the scheme to "Bearer" case-insensitively
+  // (strings.EqualFold). The rest, even empty or space-led, is the token,
+  // which must then verify; with no space there is no token.
+  const match = /^bearer (.*)$/is.exec(header);
   return match ? match[1] : undefined;
+}
+
+/** Trim as Go's strings.TrimSpace does (kdex-fngogen's \`entitlementsClaim\`,
+ * the host's parseToStringArray): Unicode White_Space, which includes U+0085
+ * and excludes U+FEFF. String.prototype.trim differs on both. */
+function trimSpace(s: string): string {
+  return s.replace(/^\\p{White_Space}+|\\p{White_Space}+$/gu, "");
 }
 
 /** Read the FAT's \`entitlements\` claim as the host gate's parseToStringArray
@@ -90,11 +99,11 @@ function entitlementsFromClaims(claims: Record<string, unknown>): string[] | und
   const raw = claims.entitlements;
   if (raw === undefined || raw === null) return [];
   if (typeof raw === "string") {
-    const value = raw.trim();
+    const value = trimSpace(raw);
     return value === "" ? [] : [value];
   }
   if (Array.isArray(raw) && raw.every((v): v is string => typeof v === "string")) {
-    return raw.map((v) => v.trim());
+    return raw.map(trimSpace);
   }
   return undefined;
 }

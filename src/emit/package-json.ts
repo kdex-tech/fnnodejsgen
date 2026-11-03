@@ -62,7 +62,10 @@ export function raiseEntitlementsFloor(
   const pkg = JSON.parse(existing) as { dependencies?: Record<string, string> };
   const range = pkg.dependencies?.[ENTITLEMENTS_PACKAGE];
   if (range === undefined || validRange(range) === null) return undefined;
-  if (intersects(range, `>=${ENTITLEMENTS_FLOOR}`)) return undefined;
+  // includePrerelease: without it a pre-release pin at or above the floor
+  // ("1.0.0-rc.1") intersects nothing and would be rewritten DOWN to ^0.7.0.
+  // A pre-release of the floor itself ("0.7.0-rc.1") is still below it.
+  if (intersects(range, `>=${ENTITLEMENTS_FLOOR}`, { includePrerelease: true })) return undefined;
   pkg.dependencies![ENTITLEMENTS_PACKAGE] = ENTITLEMENTS_RANGE;
   notify(
     `raised ${ENTITLEMENTS_PACKAGE} from ${range} to ${ENTITLEMENTS_RANGE} in package.json: generated auth needs >= ${ENTITLEMENTS_FLOOR}`,

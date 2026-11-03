@@ -25,6 +25,15 @@ export const HTTP_METHODS: readonly HttpMethod[] = [
  * `bearerSchemeName` in cmd/prepare_security.go. */
 export const BEARER_SCHEME = "bearer";
 
+/** A fresh map for keys taken from the spec (scheme names, status codes,
+ * property names). It has no prototype, so `__proto__`, `constructor` and
+ * `prototype` are ordinary keys: on a plain `{}`, assigning `__proto__` sets
+ * the prototype instead, and `[{"__proto__": ["admin"]}]` became `[{}]`, an
+ * unguarded route. */
+export function specKeyed<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 /** A single requirement clause (AND of scheme→scopes). Multiple clauses on
  * an operation are OR'd. */
 export type SecurityRequirement = Record<string, string[]>;

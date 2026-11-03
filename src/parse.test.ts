@@ -208,6 +208,32 @@ describe("parseSpec — conformance with kdex-fngogen operationRequirements", ()
   });
 });
 
+describe("parseSpec — Object.prototype names are ordinary spec keys", () => {
+  // Built on a plain {}, a scheme named __proto__ set the prototype instead of
+  // a key: [{"__proto__":["admin"]}] became [{}] and left the route unguarded.
+  it.each([
+    ['[{"__proto__":["admin"]}]', [{ bearer: ["admin"] }]],
+    ['[{"__proto__":["b"],"bearer":["a"]}]', [{ bearer: ["b", "a"] }]],
+    ['[{"constructor":["c"]},{"prototype":[]}]', [{ bearer: ["c"] }, { bearer: [] }]],
+  ])("%s", async (security, want) => {
+    const ir = await parseDoc(withSecurity(JSON.parse(security)));
+    expect(ir.operations[0]!.security).toEqual(want);
+    expect(ir.hasSecurity).toBe(true);
+  });
+
+  it("keeps a response keyed __proto__", async () => {
+    const doc = JSON.parse(
+      '{"paths":{"/x":{"get":{"operationId":"x","responses":{"__proto__":{"description":"P"}}}}}}',
+    );
+    const ir = await parseDoc(doc);
+    expect(Object.keys(ir.operations[0]!.responses)).toEqual(["__proto__"]);
+  });
+
+  it("maps an operationId of __proto__ to a method name that is not one", () => {
+    expect(toMethodName("__proto__")).toBe("proto");
+  });
+});
+
 describe("parseSpec — scope-less non-bearer alternatives", () => {
   afterEach(() => {
     vi.restoreAllMocks();

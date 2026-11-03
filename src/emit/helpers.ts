@@ -8,6 +8,13 @@ export function jsString(s: string): string {
   return JSON.stringify(s);
 }
 
+/** Render an object-literal key for emission. A literal `"__proto__":` key
+ * sets the prototype instead of a property, so that one is emitted computed
+ * (`["__proto__"]:`), which is an ordinary key. */
+export function propertyKey(s: string): string {
+  return s === "__proto__" ? `[${jsString(s)}]` : jsString(s);
+}
+
 /** Pascal-case a string. */
 export function pascal(s: string): string {
   const parts = s.split(/[-_.\s/]+/).filter(Boolean);

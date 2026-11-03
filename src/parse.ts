@@ -3,6 +3,7 @@ import SwaggerParser from "@apidevtools/swagger-parser";
 import {
   BEARER_SCHEME,
   HTTP_METHODS,
+  specKeyed,
   type BodyOrResponse,
   type HttpMethod,
   type IR,
@@ -110,7 +111,7 @@ export function parseSecurity(raw: unknown, where: string): SecurityRequirement[
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new Error(`${where}: alternative ${i}: want an object, got ${JSON.stringify(item)}`);
     }
-    const clause: SecurityRequirement = {};
+    const clause: SecurityRequirement = specKeyed();
     for (const [scheme, scopes] of Object.entries(item)) {
       if (!Array.isArray(scopes) || !scopes.every((s) => typeof s === "string")) {
         throw new Error(
@@ -139,6 +140,8 @@ export function bearerOnly(reqs: SecurityRequirement[]): SecurityRequirement[] {
       empty.push({});
       continue;
     }
+    // A Set, and names from Object.keys are own keys, so a scheme named
+    // __proto__ contributes its strings like any other.
     const union = new Set<string>();
     for (const name of names) for (const scope of req[name] ?? []) union.add(scope);
     nonEmpty.push({ [BEARER_SCHEME]: [...union] });
@@ -226,7 +229,7 @@ export async function parseSpec(specPath: string): Promise<IR> {
         : [];
       const mergedParams = [...pathLevelParams, ...opParams];
 
-      const responses: Record<string, BodyOrResponse> = {};
+      const responses = specKeyed<BodyOrResponse>();
       const respRaw = (op.responses as Record<string, unknown> | undefined) ?? {};
       for (const [code, rRaw] of Object.entries(respRaw)) {
         const body = parseBody(rRaw, true);

@@ -6,7 +6,7 @@ function tsTypeForSchema(schema: unknown, schemas: IR["schemas"]): string {
   const s = schema as Record<string, unknown>;
   if (typeof s.$ref === "string") {
     const name = s.$ref.replace(/^#\/components\/schemas\//, "");
-    if (name in schemas) return `components["schemas"][${JSON.stringify(name)}]`;
+    if (Object.hasOwn(schemas, name)) return `components["schemas"][${JSON.stringify(name)}]`;
     return "unknown";
   }
   const t = s.type;

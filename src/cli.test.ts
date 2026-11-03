@@ -196,6 +196,33 @@ describe("CLI — auth.ts verifies only the FAT bearer token", () => {
   });
 });
 
+describe("CLI — Object.prototype names in spec keys", () => {
+  it("a $ref to a missing component named constructor stays a $ref; __proto__ stays a key", async () => {
+    const target = makeTarget("proto-keys");
+    const spec = join(target, "spec.json");
+    try {
+      writeFileSync(
+        spec,
+        `{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+          "components":{"schemas":{"__proto__":{"type":"string"}}},
+          "paths":{"/x":{"put":{"operationId":"x",
+            "requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/constructor"}}}},
+            "responses":{"200":{"description":"OK"}}}}}}`,
+        "utf8",
+      );
+      await run({ spec, target });
+      const schemas = readFileSync(join(target, "api/schemas.gen.ts"), "utf8");
+      expect(schemas).toMatch(/\$ref: "#\/components\/schemas\/constructor"/);
+      // A literal "__proto__": key would set the prototype, not a key.
+      expect(schemas).toMatch(/\["__proto__"\]: \{/);
+      const service = readFileSync(join(target, "api/service.gen.ts"), "utf8");
+      expect(service).not.toMatch(/components\["schemas"\]\["constructor"\]/);
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("CLI — overwrite policy", () => {
   it("preserves src/custom.ts but refreshes the generated files on re-run", async () => {
     const target = makeTarget("regen");
@@ -269,7 +296,7 @@ describe("CLI — the entitlements library floor", () => {
     }
   });
 
-  it.each(["^0.1.23", "~0.6.0", "0.1.24", "<0.7.0"])(
+  it.each(["^0.1.23", "~0.6.0", "0.1.24", "<0.7.0", "0.7.0-rc.1"])(
     "regeneration raises %s to ^0.7.0 and says so",
     async (range) => {
       const { deps, err } = await regenWith(range);
@@ -279,14 +306,22 @@ describe("CLI — the entitlements library floor", () => {
     },
   );
 
-  it.each(["^0.7.0", "^0.7.3", "^1.2.0", ">=0.5.0", "file:../entitlements.tgz", "latest"])(
-    "regeneration leaves %s alone",
-    async (range) => {
-      const { deps, err } = await regenWith(range);
-      expect(deps["@kdex-tech/entitlements"]).toBe(range);
-      expect(err).not.toContain("raised @kdex-tech/entitlements");
-    },
-  );
+  it.each([
+    "^0.7.0",
+    "^0.7.3",
+    "^1.2.0",
+    ">=0.5.0",
+    // A pre-release at or above the floor is not a downgrade candidate.
+    "1.0.0-rc.1",
+    "0.8.0-beta.1",
+    "=0.9.0-rc.0",
+    "file:../entitlements.tgz",
+    "latest",
+  ])("regeneration leaves %s alone", async (range) => {
+    const { deps, err } = await regenWith(range);
+    expect(deps["@kdex-tech/entitlements"]).toBe(range);
+    expect(err).not.toContain("raised @kdex-tech/entitlements");
+  });
 });
 
 describe("CLI — emitted code passes tsc --noEmit", () => {
@@ -343,6 +378,15 @@ describe("CLI — emitted auth plugin at runtime", () => {
           responses: { "200": { description: "OK" } },
         },
       },
+      // A scheme named __proto__ is an ordinary key: built on a plain {}, it
+      // vanished and left the route unguarded. JSON.parse keeps it own.
+      "/proto-scheme": {
+        get: {
+          operationId: "protoScheme",
+          security: JSON.parse('[{"__proto__":["admin"]}]'),
+          responses: { "200": { description: "OK" } },
+        },
+      },
       "/required-body": {
         post: {
           operationId: "requiredBody",
@@ -393,7 +437,7 @@ const app = Fastify({ logger: false });
 await app.register(auth);
 const echo = async ({ claims }: { claims: Record<string, unknown> }) => ({ claims });
 await app.register(routes, {
-  service: { optional: echo, required: echo, requiredBody: echo } as never,
+  service: { optional: echo, required: echo, requiredBody: echo, protoScheme: echo } as never,
 });
 // Routes the generator did not emit: one with no methodName passes the auth
 // hook untouched; one whose methodName has no operationSecurity entry (a
@@ -415,6 +459,7 @@ const tokens: Record<string, string | undefined> = {
   none: undefined,
   withA: await withEntitlements(["a"]),
   withoutA: await withEntitlements(["x"]),
+  withAdmin: await withEntitlements(["admin"]),
   badSignature: await mint({ ...base, entitlements: ["a"] }, otherKey.privateKey),
   expired: await mint({ ...base, entitlements: ["a"], exp: now - 3600 }),
   noExp: await mint({ ...noExp, entitlements: ["a"] }),
@@ -428,6 +473,9 @@ const tokens: Record<string, string | undefined> = {
   emptyString: await withEntitlements("   "),
   joinedString: await withEntitlements("x a"),
   paddedArrayA: await withEntitlements([" a "]),
+  // Trimmed as Go's strings.TrimSpace trims: U+0085 is space, U+FEFF is not.
+  nelPaddedA: await withEntitlements(["\\u0085a\\u0085"]),
+  bomA: await withEntitlements(["\\uFEFFa"]),
   nonStringElement: await withEntitlements(["a", 1]),
   number: await withEntitlements(5),
   object: await withEntitlements({ bearer: ["a"] }),
@@ -446,6 +494,16 @@ for (const [name, token] of Object.entries(tokens)) {
 }
 await call("scheme:lower", "GET", "/required", { authorization: "bearer " + tokens.withA });
 await call("scheme:upper", "GET", "/required", { authorization: "BEARER " + tokens.withA });
+// ogen cuts the header on ONE space: a second space stays in the token, which
+// then fails verification; a tab is no separator, so there is no token.
+for (const route of ["optional", "required"]) {
+  await call("twoSpaces:" + route, "GET", "/" + route, { authorization: "Bearer  " + tokens.withA });
+  await call("tab:" + route, "GET", "/" + route, { authorization: "Bearer\\t" + tokens.withA });
+  await call("emptyToken:" + route, "GET", "/" + route, { authorization: "Bearer " });
+}
+await call("protoScheme:withA", "GET", "/proto-scheme", { authorization: "Bearer " + tokens.withA });
+await call("protoScheme:withAdmin", "GET", "/proto-scheme", { authorization: "Bearer " + tokens.withAdmin });
+await call("protoScheme:none", "GET", "/proto-scheme", {});
 await call("body:invalidNoToken", "POST", "/required-body", {}, { nope: 1 });
 await call("body:invalidWithA", "POST", "/required-body", { authorization: "Bearer " + tokens.withA }, { nope: 1 });
 await call("body:validWithA", "POST", "/required-body", { authorization: "Bearer " + tokens.withA }, { name: "n" });
@@ -501,6 +559,8 @@ process.stdout.write(JSON.stringify(results));
     ["number", 401, 401],
     ["object", 401, 401],
     ["bool", 401, 401],
+    ["nelPaddedA", 200, 200],
+    ["bomA", 200, 403],
   ];
   for (const [token, optional, required] of cases) {
     it(`${token}: optional → ${optional}, required → ${required}`, (ctx) => {
@@ -516,6 +576,15 @@ process.stdout.write(JSON.stringify(results));
     // The Authorization scheme is case-insensitive (RFC 9110; ogen's EqualFold).
     ["scheme:lower", 200],
     ["scheme:upper", 200],
+    ["twoSpaces:optional", 401],
+    ["twoSpaces:required", 401],
+    ["tab:optional", 200],
+    ["tab:required", 401],
+    ["emptyToken:optional", 401],
+    ["emptyToken:required", 401],
+    ["protoScheme:none", 401],
+    ["protoScheme:withA", 403],
+    ["protoScheme:withAdmin", 200],
     // Auth runs at onRequest, before body validation: an unauthenticated
     // caller learns nothing of the body schema.
     ["body:invalidNoToken", 401],

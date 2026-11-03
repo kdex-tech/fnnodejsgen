@@ -1,5 +1,5 @@
-import type { IR, Operation } from "../types.js";
-import { GEN_BANNER, jsString } from "./helpers.js";
+import { specKeyed, type IR, type Operation } from "../types.js";
+import { GEN_BANNER, propertyKey } from "./helpers.js";
 
 /** Inline `$ref: '#/components/schemas/X'` references against the spec's
  * component schemas. Fastify's response serializer (fast-json-stringify) does
@@ -23,7 +23,8 @@ function inlineRefs(
           // Cycle: leave as $ref to avoid infinite recursion.
           return { $ref: obj.$ref };
         }
-        const target = schemas[name];
+        // Own keys only: "constructor" must not find Object.prototype's.
+        const target = Object.hasOwn(schemas, name) ? schemas[name] : undefined;
         if (target !== undefined) {
           const nextSeen = new Set(seen).add(name);
           return inlineRefs(target, schemas, nextSeen);
@@ -31,7 +32,7 @@ function inlineRefs(
       }
       return { $ref: obj.$ref };
     }
-    const out: Record<string, unknown> = {};
+    const out = specKeyed<unknown>();
     for (const [k, v] of Object.entries(obj)) {
       out[k] = inlineRefs(v, schemas, seen);
     }
@@ -47,7 +48,7 @@ function paramsToJsonSchema(
 ): unknown | undefined {
   const params = op.parameters.filter((p) => p.in === where);
   if (params.length === 0) return undefined;
-  const properties: Record<string, unknown> = {};
+  const properties = specKeyed<unknown>();
   const required: string[] = [];
   for (const p of params) {
     properties[p.name] = inlineRefs(p.schema, schemas);
@@ -79,7 +80,7 @@ function operationSchema(op: Operation, schemas: IR["schemas"]): RouteSchema {
     schema.body = inlineRefs(op.requestBody.schema, schemas);
   }
 
-  const responseEntries: Record<string, unknown> = {};
+  const responseEntries = specKeyed<unknown>();
   for (const [code, resp] of Object.entries(op.responses)) {
     if (resp.schema) {
       responseEntries[code] = inlineRefs(resp.schema, schemas);
@@ -98,12 +99,12 @@ export function emitSchemas(ir: IR): string {
     // validation; the values themselves are already free of refs (or only
     // refer to other components, which addSchema can resolve).
     const value = { $id: `#/components/schemas/${name}`, ...(schema as object) };
-    return `  ${jsString(name)}: ${JSON.stringify(value, null, 2).replace(/\n/g, "\n  ")} as const`;
+    return `  ${propertyKey(name)}: ${JSON.stringify(value, null, 2).replace(/\n/g, "\n  ")} as const`;
   });
 
   const ops = ir.operations.map((op) => {
     const schema = operationSchema(op, ir.schemas);
-    return `  ${jsString(op.methodName)}: ${JSON.stringify(schema, null, 2).replace(/\n/g, "\n  ")} as const`;
+    return `  ${propertyKey(op.methodName)}: ${JSON.stringify(schema, null, 2).replace(/\n/g, "\n  ")} as const`;
   });
 
   return `${GEN_BANNER}
