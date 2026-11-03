@@ -1,8 +1,8 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { run } from "./cli.js";
 
@@ -11,6 +11,38 @@ const FIXTURES = resolve(REPO_ROOT, "test-fixtures");
 
 function makeTarget(name: string): string {
   return mkdtempSync(join(tmpdir(), `kdex-fnnodejsgen-${name}-`));
+}
+
+const ENTITLEMENTS_DIR = resolve(REPO_ROOT, "../kdex-entitlements/typescript");
+
+/** The newest packed `@kdex-tech/entitlements` tarball beside this repo, which
+ * emitted scaffolds install in place of the registry package; undefined when
+ * none is packed. Globbed rather than pinned so a version bump does not
+ * silently turn the scaffold tests into skips. */
+function findEntitlementsTarball(): string | undefined {
+  if (!existsSync(ENTITLEMENTS_DIR)) return undefined;
+  const [newest] = readdirSync(ENTITLEMENTS_DIR)
+    .filter((f) => /^kdex-tech-entitlements-.+\.tgz$/.test(f))
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  return newest === undefined ? undefined : join(ENTITLEMENTS_DIR, newest);
+}
+
+const ENTITLEMENTS_TARBALL = findEntitlementsTarball();
+const NO_TARBALL =
+  `no kdex-tech-entitlements-*.tgz in ${ENTITLEMENTS_DIR}; ` +
+  "run `npm run build && npm pack` there to enable the scaffold tests";
+
+/** Install the emitted scaffold's dependencies, the local entitlements
+ * tarball included. */
+function installScaffold(target: string, tarball: string): void {
+  execSync(`npm install ${tarball} --no-audit --no-fund --silent`, {
+    cwd: target,
+    stdio: "ignore",
+  });
+  execSync("npm install --no-audit --no-fund --silent", {
+    cwd: target,
+    stdio: "ignore",
+  });
 }
 
 const ALL_FIXTURES = [
@@ -189,58 +221,181 @@ describe("CLI — emitted code passes tsc --noEmit", () => {
   // This is the most important behavioural assertion. We install the local
   // entitlements package and then run tsc against the emitted scaffold.
   // The test is slow (~30 s per fixture), so we only run it for bearer (the
-  // representative auth path) and the no-auth case. Marking other fixtures
-  // as 'todo' makes intent explicit without slowing the suite.
+  // representative auth path), a normalized non-bearer fixture and the
+  // no-auth case.
 
-  const ENTITLEMENTS_TARBALL = resolve(
-    REPO_ROOT,
-    "../kdex-entitlements/typescript/kdex-tech-entitlements-0.1.0.tgz",
-  );
-
-  function tscOnFixture(fixture: string): void {
+  async function tscOnFixture(fixture: string, tarball: string): Promise<void> {
     const target = makeTarget(`tsc-${fixture}`);
     try {
-      // Use synchronous shell to keep the test deterministic; we already
-      // verified compatibility manually in development.
-      execSync(`node ${REPO_ROOT}/dist/cli.js --spec ${join(FIXTURES, fixture)} --target ${target}`, {
-        cwd: REPO_ROOT,
-        stdio: "ignore",
-      });
-      execSync(`npm install ${ENTITLEMENTS_TARBALL} --no-audit --no-fund --silent`, {
-        cwd: target,
-        stdio: "ignore",
-      });
-      execSync("npm install --no-audit --no-fund --silent", {
-        cwd: target,
-        stdio: "ignore",
-      });
+      await run({ spec: join(FIXTURES, fixture), target });
+      installScaffold(target, tarball);
       execSync("npx tsc --noEmit", { cwd: target, stdio: "pipe" });
     } finally {
       rmSync(target, { recursive: true, force: true });
     }
   }
 
-  it.runIf(existsSync(ENTITLEMENTS_TARBALL) && existsSync(resolve(REPO_ROOT, "dist/cli.js")))(
-    "openapi-spec.json (no auth)",
-    { timeout: 120_000 },
-    () => {
-      tscOnFixture("openapi-spec.json");
-    },
-  );
+  for (const [fixture, label] of [
+    ["openapi-spec.json", "no auth"],
+    ["openapi-spec-bearer.json", "bearer JWT"],
+    ["openapi-spec-apikey-header.json", "normalized to bearer"],
+  ] as const) {
+    it(`${fixture} (${label})`, { timeout: 120_000 }, async (ctx) => {
+      if (ENTITLEMENTS_TARBALL === undefined) return ctx.skip(NO_TARBALL);
+      await tscOnFixture(fixture, ENTITLEMENTS_TARBALL);
+    });
+  }
+});
 
-  it.runIf(existsSync(ENTITLEMENTS_TARBALL) && existsSync(resolve(REPO_ROOT, "dist/cli.js")))(
-    "openapi-spec-bearer.json (bearer JWT)",
-    { timeout: 120_000 },
-    () => {
-      tscOnFixture("openapi-spec-bearer.json");
+describe("CLI — emitted auth plugin at runtime", () => {
+  // kdex-tech/fngogen#18: drive the emitted auth plugin and routes in a real
+  // fastify app, against a test JWKS, for an optional-auth operation
+  // ([{bearer:["a"]}, {}]) and a required one ([{bearer:["a"]}]). A token that
+  // is present must verify, or the call is refused, even where {} would admit
+  // a caller with no token at all.
+  const spec = {
+    openapi: "3.0.0",
+    info: { title: "auth-runtime", version: "1.0.0" },
+    components: { securitySchemes: { bearer: { type: "http", scheme: "bearer" } } },
+    paths: {
+      "/optional": {
+        get: {
+          operationId: "optional",
+          security: [{ bearer: ["a"] }, {}],
+          responses: { "200": { description: "OK" } },
+        },
+      },
+      "/required": {
+        get: {
+          operationId: "required",
+          security: [{ bearer: ["a"] }],
+          responses: { "200": { description: "OK" } },
+        },
+      },
     },
-  );
+  };
 
-  it.runIf(existsSync(ENTITLEMENTS_TARBALL) && existsSync(resolve(REPO_ROOT, "dist/cli.js")))(
-    "openapi-spec-apikey-header.json (normalized to bearer)",
-    { timeout: 120_000 },
-    () => {
-      tscOnFixture("openapi-spec-apikey-header.json");
-    },
-  );
+  // Runs inside the scaffold (tsx resolves its .js imports to the emitted .ts).
+  // The env must be set before the auth module loads: it reads it on import.
+  const driver = `
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import Fastify from "fastify";
+import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from "jose";
+
+const key = await generateKeyPair("ES256");
+const otherKey = await generateKeyPair("ES256");
+const jwk = { ...(await exportJWK(key.publicKey)), kid: "k", alg: "ES256", use: "sig" };
+const jwksServer = createServer((_req, res) => {
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({ keys: [jwk] }));
+});
+await new Promise<void>((r) => jwksServer.listen(0, "127.0.0.1", r));
+const port = (jwksServer.address() as AddressInfo).port;
+process.env.AUDIENCE = "fn";
+process.env.ISSUER = "https://host.test";
+process.env.JWKS_URL = \`http://127.0.0.1:\${port}/jwks\`;
+
+const { auth } = await import("./src/auth.js");
+const { routes } = await import("./api/routes.gen.js");
+
+const app = Fastify({ logger: false });
+await app.register(auth);
+const echo = async ({ claims }: { claims: Record<string, unknown> }) => ({ claims });
+await app.register(routes, { service: { optional: echo, required: echo } as never });
+
+const now = Math.floor(Date.now() / 1000);
+const base: JWTPayload = { iss: "https://host.test", aud: "fn", sub: "alice", exp: now + 3600 };
+const mint = (claims: JWTPayload, signer = key.privateKey) =>
+  new SignJWT(claims).setProtectedHeader({ alg: "ES256", kid: "k" }).sign(signer);
+const { exp: _exp, ...noExp } = base;
+const { sub: _sub, ...noSub } = base;
+
+const tokens: Record<string, string | undefined> = {
+  none: undefined,
+  withA: await mint({ ...base, entitlements: ["a"] }),
+  withoutA: await mint({ ...base, entitlements: ["x"] }),
+  badSignature: await mint({ ...base, entitlements: ["a"] }, otherKey.privateKey),
+  expired: await mint({ ...base, entitlements: ["a"], exp: now - 3600 }),
+  noExp: await mint({ ...noExp, entitlements: ["a"] }),
+  zeroExp: await mint({ ...base, entitlements: ["a"], exp: 0 }),
+  noSub: await mint({ ...noSub, entitlements: ["a"] }),
+  wrongAudience: await mint({ ...base, aud: "other", entitlements: ["a"] }),
+  nullEntitlements: await mint({ ...base, entitlements: null } as unknown as JWTPayload),
+};
+
+const results: Record<string, { status: number; body: unknown }> = {};
+for (const [name, token] of Object.entries(tokens)) {
+  for (const route of ["optional", "required"]) {
+    const res = await app.inject({
+      method: "GET",
+      url: "/" + route,
+      headers: token === undefined ? {} : { authorization: "Bearer " + token },
+    });
+    results[route + ":" + name] = { status: res.statusCode, body: res.json() };
+  }
+}
+await app.close();
+jwksServer.close();
+process.stdout.write(JSON.stringify(results));
+`;
+
+  let target: string | undefined;
+  let results: Record<string, { status: number; body: { claims?: Record<string, unknown> } }> =
+    {};
+
+  beforeAll(async () => {
+    if (ENTITLEMENTS_TARBALL === undefined) return;
+    target = makeTarget("auth-runtime");
+    const specPath = join(target, "spec.json");
+    writeFileSync(specPath, JSON.stringify(spec), "utf8");
+    await run({ spec: specPath, target });
+    installScaffold(target, ENTITLEMENTS_TARBALL);
+    writeFileSync(join(target, "driver.ts"), driver, "utf8");
+    results = JSON.parse(execSync("npx tsx driver.ts", { cwd: target, encoding: "utf8" }));
+  }, 180_000);
+
+  afterAll(() => {
+    if (target) rmSync(target, { recursive: true, force: true });
+  });
+
+  const cases: Array<[string, number, number]> = [
+    // token, optional status, required status
+    ["none", 200, 401],
+    ["withA", 200, 200],
+    ["withoutA", 200, 403],
+    ["badSignature", 401, 401],
+    ["expired", 401, 401],
+    ["noExp", 401, 401],
+    ["zeroExp", 401, 401],
+    ["noSub", 401, 401],
+    ["wrongAudience", 401, 401],
+    ["nullEntitlements", 200, 403],
+  ];
+  for (const [token, optional, required] of cases) {
+    it(`${token}: optional → ${optional}, required → ${required}`, (ctx) => {
+      if (ENTITLEMENTS_TARBALL === undefined) return ctx.skip(NO_TARBALL);
+      expect({
+        optional: results[`optional:${token}`]?.status,
+        required: results[`required:${token}`]?.status,
+      }).toEqual({ optional, required });
+    });
+  }
+
+  it("a satisfying token's claims reach the handler", (ctx) => {
+    if (ENTITLEMENTS_TARBALL === undefined) return ctx.skip(NO_TARBALL);
+    for (const route of ["optional", "required"]) {
+      expect(results[`${route}:withA`]?.body.claims).toMatchObject({
+        sub: "alice",
+        entitlements: ["a"],
+      });
+    }
+  });
+
+  it("an anonymous admission carries no claims, even with a valid token", (ctx) => {
+    if (ENTITLEMENTS_TARBALL === undefined) return ctx.skip(NO_TARBALL);
+    for (const token of ["none", "withoutA", "nullEntitlements"]) {
+      expect(results[`optional:${token}`]?.body.claims, token).toEqual({});
+    }
+  });
 });

@@ -125,18 +125,31 @@ function parseBody(raw: unknown, alwaysRequired: boolean): BodyOrResponse | unde
   };
 }
 
-function parseSecurity(raw: unknown): SecurityRequirement[] {
-  if (!Array.isArray(raw)) return [];
-  const out: SecurityRequirement[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
+/** Read an operation's `security` (absent or null: none). A value that is not
+ * an array of objects whose scheme values are arrays of strings throws, naming
+ * `where`: read leniently, `{"oauth2": "users:write"}` became `{bearer: []}`,
+ * which any valid token satisfies, and a non-object alternative vanished.
+ * Exported for tests. */
+export function parseSecurity(raw: unknown, where: string): SecurityRequirement[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(`${where}: want an array of requirement objects, got ${typeof raw}`);
+  }
+  return raw.map((item: unknown, i) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`${where}: alternative ${i}: want an object, got ${JSON.stringify(item)}`);
+    }
     const clause: SecurityRequirement = {};
     for (const [scheme, scopes] of Object.entries(item)) {
-      clause[scheme] = Array.isArray(scopes) ? (scopes as unknown[]).map(String) : [];
+      if (!Array.isArray(scopes) || !scopes.every((s) => typeof s === "string")) {
+        throw new Error(
+          `${where}: security scheme ${JSON.stringify(scheme)}: want an array of strings, got ${JSON.stringify(scopes)}`,
+        );
+      }
+      clause[scheme] = [...scopes];
     }
-    out.push(clause);
-  }
-  return out;
+    return clause;
+  });
 }
 
 /** Normalize security alternatives to bearer-only. Generated functions accept
@@ -208,7 +221,9 @@ export async function parseSpec(specPath: string): Promise<IR> {
         parameters: mergedParams,
         requestBody: parseBody(op.requestBody, false),
         responses,
-        security: bearerOnly(parseSecurity(op.security)),
+        security: bearerOnly(
+          parseSecurity(op.security, `security of ${method.toUpperCase()} ${path}`),
+        ),
         summary: op.summary as string | undefined,
         description: op.description as string | undefined,
         tags: Array.isArray(op.tags) ? (op.tags as unknown[]).map(String) : [],

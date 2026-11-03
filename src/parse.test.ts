@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { bearerOnly, parseSpec, refToSchemaName, toMethodName } from "./parse.js";
+import { bearerOnly, parseSecurity, parseSpec, refToSchemaName, toMethodName } from "./parse.js";
 
 describe("toMethodName", () => {
   it("camelCases hyphenated ids", () => {
@@ -111,5 +114,59 @@ describe("bearerOnly", () => {
   });
   it("maps a scopeless scheme to an empty bearer", () => {
     expect(bearerOnly([{ x: [] }])).toEqual([{ bearer: [] }]);
+  });
+});
+
+describe("parseSecurity", () => {
+  // A requirement read leniently weakens it: {"oauth2": "users:write"} became
+  // {bearer: []}, which any valid token satisfies, and a non-object
+  // alternative vanished, leaving the operation unguarded. Fail closed.
+  it.each([
+    ["a scheme value that is not an array", [{ oauth2: "users:write" }]],
+    ["a non-string scope", [{ oauth2: [123] }]],
+    ["a null scheme value", [{ oauth2: null }]],
+    ["an alternative that is not an object", ["bearer"]],
+    ["a null alternative", [null]],
+    ["security that is not an array", { bearer: [] }],
+  ])("throws on %s", (_name, raw) => {
+    expect(() => parseSecurity(raw, "security of PUT /x")).toThrow(/security of PUT \/x/);
+  });
+
+  it("reads absent or null security as none", () => {
+    expect(parseSecurity(undefined, "w")).toEqual([]);
+    expect(parseSecurity(null, "w")).toEqual([]);
+  });
+
+  it("keeps well-formed alternatives", () => {
+    expect(parseSecurity([{ oauth2: ["a"] }, {}], "w")).toEqual([{ oauth2: ["a"] }, {}]);
+  });
+});
+
+describe("parseSpec — malformed security", () => {
+  it("rejects the spec, naming the operation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kdex-fnnodejsgen-parse-"));
+    try {
+      const spec = join(dir, "spec.json");
+      writeFileSync(
+        spec,
+        JSON.stringify({
+          openapi: "3.0.0",
+          info: { title: "t", version: "1" },
+          paths: {
+            "/x": {
+              put: {
+                operationId: "x",
+                security: [{ oauth2: "users:write" }],
+                responses: { "200": { description: "OK" } },
+              },
+            },
+          },
+        }),
+        "utf8",
+      );
+      await expect(parseSpec(spec)).rejects.toThrow(/PUT \/x/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
