@@ -1,15 +1,14 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 
 import {
+  BEARER_SCHEME,
   HTTP_METHODS,
   type BodyOrResponse,
   type HttpMethod,
   type IR,
   type Operation,
   type Parameter,
-  type SecurityFlags,
   type SecurityRequirement,
-  type SecurityScheme,
 } from "./types.js";
 
 /** Convert a kebab/snake-case OpenAPI operationId to a camelCase TS method
@@ -39,37 +38,9 @@ export function refToSchemaName(ref: string | undefined): string | undefined {
   return ref.startsWith(prefix) ? ref.slice(prefix.length) : undefined;
 }
 
-function flagsForSchemes(schemes: Record<string, SecurityScheme>): SecurityFlags {
-  const flags: SecurityFlags = {
-    hasSecurity: false,
-    bearer: false,
-    oauth2: false,
-    openIdConnect: false,
-    apiKeyHeader: false,
-    apiKeyQuery: false,
-    apiKeyCookie: false,
-  };
-  for (const s of Object.values(schemes)) {
-    flags.hasSecurity = true;
-    switch (s.kind) {
-      case "bearer":
-        flags.bearer = true;
-        break;
-      case "oauth2":
-        flags.oauth2 = true;
-        break;
-      case "openIdConnect":
-        flags.openIdConnect = true;
-        break;
-      case "apiKey":
-        if (s.in === "header") flags.apiKeyHeader = true;
-        if (s.in === "query") flags.apiKeyQuery = true;
-        if (s.in === "cookie") flags.apiKeyCookie = true;
-        break;
-    }
-  }
-  return flags;
-}
+/** A method name is interpolated raw into emitted TypeScript (`service.X(`,
+ * `XArgs`), so it must be a plain identifier. ASCII only, to fail closed. */
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 function parseParameter(raw: unknown): Parameter | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -170,9 +141,50 @@ export function bearerOnly(reqs: SecurityRequirement[]): SecurityRequirement[] {
     }
     const union = new Set<string>();
     for (const name of names) for (const scope of req[name] ?? []) union.add(scope);
-    nonEmpty.push({ bearer: [...union] });
+    nonEmpty.push({ [BEARER_SCHEME]: [...union] });
   }
   return [...nonEmpty, ...empty];
+}
+
+/** Warn, once per operation, when a non-empty alternative is made only of
+ * non-bearer schemes with no requirement strings, e.g. `[{"apiKeyHeader":
+ * []}]`: the bearer rewrite turns it into `{bearer: []}`, which any valid FAT
+ * satisfies. Such specs are normal (knowdb's, for one), so it is not an error.
+ * A scheme counts as bearer by its name. Its counterpart, with the same
+ * wording, is kdex-fngogen's `scopelessNonBearerWarnings`
+ * (cmd/prepare_security.go). */
+function warnScopelessNonBearer(reqs: SecurityRequirement[], where: string): void {
+  const scopeless = reqs.some((req) => {
+    const names = Object.keys(req);
+    if (names.length === 0 || names.includes(BEARER_SCHEME)) return false;
+    return names.every((name) => (req[name] ?? []).length === 0);
+  });
+  if (scopeless) {
+    process.stderr.write(
+      `warning: ${where}: an alternative with no requirement strings under non-bearer schemes becomes "any valid FAT" at the function\n`,
+    );
+  }
+}
+
+/** Refuse path item shapes whose operations the bearer rewrite cannot see: a
+ * `$ref` path item, and OpenAPI 3.2's `query` and `additionalOperations`.
+ * Their operations would get no route and no requirement entry. That fails
+ * closed, but without saying why; fail at generation instead, naming the
+ * shape. Its counterpart, with the same wording, is kdex-fngogen's
+ * `eachOperation` (cmd/prepare_security.go). */
+function refuseUnseenPathShapes(path: string, pathItem: Record<string, unknown>): void {
+  if ("$ref" in pathItem) {
+    throw new Error(
+      `path ${path}: a path item $ref is not supported: generation cannot see the operations it points to; declare them inline`,
+    );
+  }
+  for (const field of ["query", "additionalOperations"]) {
+    if (field in pathItem) {
+      throw new Error(
+        `path ${path}: the OpenAPI 3.2 path item field ${JSON.stringify(field)} is not supported: generation cannot see the operations it holds`,
+      );
+    }
+  }
 }
 
 /** Load the OpenAPI document at `specPath` and produce an IR. The document is
@@ -188,6 +200,7 @@ export async function parseSpec(specPath: string): Promise<IR> {
   for (const [path, pathItemRaw] of Object.entries(paths)) {
     if (!pathItemRaw || typeof pathItemRaw !== "object") continue;
     const pathItem = pathItemRaw as Record<string, unknown>;
+    refuseUnseenPathShapes(path, pathItem);
     const pathLevelParams = Array.isArray(pathItem.parameters)
       ? (pathItem.parameters as unknown[])
           .map(parseParameter)
@@ -198,7 +211,14 @@ export async function parseSpec(specPath: string): Promise<IR> {
       const opRaw = pathItem[method];
       if (!opRaw || typeof opRaw !== "object") continue;
       const op = opRaw as Record<string, unknown>;
+      const where = `${method.toUpperCase()} ${path}`;
       const operationId = String(op.operationId ?? `${method}${path}`);
+      const methodName = toMethodName(operationId);
+      if (!IDENTIFIER.test(methodName)) {
+        throw new Error(
+          `${where}: operationId ${JSON.stringify(operationId)} maps to method name ${JSON.stringify(methodName)}, which is not a JavaScript identifier`,
+        );
+      }
       const opParams = Array.isArray(op.parameters)
         ? (op.parameters as unknown[])
             .map(parseParameter)
@@ -213,30 +233,24 @@ export async function parseSpec(specPath: string): Promise<IR> {
         if (body) responses[code] = body;
       }
 
+      const security = parseSecurity(op.security, `security of ${where}`);
+      warnScopelessNonBearer(security, where);
+
       operations.push({
         operationId,
-        methodName: toMethodName(operationId),
+        methodName,
         path,
         method: method as HttpMethod,
         parameters: mergedParams,
         requestBody: parseBody(op.requestBody, false),
         responses,
-        security: bearerOnly(
-          parseSecurity(op.security, `security of ${method.toUpperCase()} ${path}`),
-        ),
+        security: bearerOnly(security),
         summary: op.summary as string | undefined,
         description: op.description as string | undefined,
         tags: Array.isArray(op.tags) ? (op.tags as unknown[]).map(String) : [],
       });
     }
   }
-
-  // Every surviving alternative is bearer, so the only scheme is `bearer`; the
-  // declared components.securitySchemes no longer shape the function side.
-  const hasSecurity = operations.some((o) => o.security.some((r) => Object.keys(r).length > 0));
-  const securitySchemes: Record<string, SecurityScheme> = hasSecurity
-    ? { bearer: { kind: "bearer" } }
-    : {};
 
   const info = (api.info as Record<string, unknown> | undefined) ?? {};
   return {
@@ -247,7 +261,8 @@ export async function parseSpec(specPath: string): Promise<IR> {
     },
     schemas: componentSchemas,
     operations,
-    securitySchemes,
-    securityFlags: flagsForSchemes(securitySchemes),
+    // Every surviving alternative is bearer, so the declared
+    // components.securitySchemes no longer shape the function side.
+    hasSecurity: operations.some((o) => o.security.some((r) => Object.keys(r).length > 0)),
   };
 }

@@ -1,5 +1,5 @@
-import type { IR } from "../types.js";
-import { GEN_BANNER } from "./helpers.js";
+import { BEARER_SCHEME, type IR } from "../types.js";
+import { GEN_BANNER, jsString } from "./helpers.js";
 
 /** Emit `src/auth.ts` — Fastify plugin that verifies the host-minted JWT (FAT,
  * via jose) from `Authorization: Bearer` and authorizes on its `entitlements`
@@ -10,10 +10,10 @@ import { GEN_BANNER } from "./helpers.js";
  * credential (PASETO, apiKey, cookie) or claim (`scope`) is ever read; see
  * kdex-tech/fngogen#18. Always overwritten. */
 export function emitAuth(ir: IR): string {
-  if (!ir.securityFlags.hasSecurity) {
+  if (!ir.hasSecurity) {
     return `${GEN_BANNER}
 
-// This OpenAPI spec declares no securitySchemes; no auth plugin needed.
+// This OpenAPI spec has no security requirements; no auth plugin needed.
 export const auth = async (): Promise<void> => {
   /* noop */
 };
@@ -53,7 +53,7 @@ const anonymousEntitlements = (process.env.ANONYMOUS_ENTITLEMENTS ?? "")
 
 // The one scheme entitlements and requirements are keyed under: the generator
 // rewrites every security alternative to bearer.
-const SCHEME = "bearer";
+const SCHEME = ${jsString(BEARER_SCHEME)};
 
 const jwks = createRemoteJWKSet(new URL(jwksUrl));
 const checker = new EntitlementsChecker(anonymousEntitlements, SCHEME, false);
@@ -73,15 +73,30 @@ async function verifyJwt(token: string): Promise<Record<string, unknown>> {
 function extractToken(request: FastifyRequest): string | undefined {
   const header = request.headers["authorization"];
   if (typeof header !== "string") return undefined;
-  const match = /^Bearer\\s+(.+)$/.exec(header);
+  // The scheme is case-insensitive (RFC 9110), as ogen's EqualFold is in
+  // kdex-fngogen.
+  const match = /^bearer\\s+(.+)$/i.exec(header);
   return match ? match[1] : undefined;
 }
 
-function entitlementsFromClaims(claims: Record<string, unknown>, claimKey: string): string[] {
-  const raw = claims[claimKey];
-  if (typeof raw === "string") return raw.split(/\\s+/).filter(Boolean);
-  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string");
-  return [];
+/** Read the FAT's \`entitlements\` claim as the host gate's parseToStringArray
+ * does (kdex-host-manager internal/auth/context.go), so the function admits
+ * exactly what the host minted: absent or null is none; a string is ONE
+ * entitlement, trimmed and never split (an empty one is none); an array must
+ * hold only strings, each trimmed. Anything else makes the token invalid
+ * (undefined). kdex-fngogen's counterpart is \`entitlementsClaim\` in
+ * cmd/templates/main.go.tmpl. */
+function entitlementsFromClaims(claims: Record<string, unknown>): string[] | undefined {
+  const raw = claims.entitlements;
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw === "string") {
+    const value = raw.trim();
+    return value === "" ? [] : [value];
+  }
+  if (Array.isArray(raw) && raw.every((v): v is string => typeof v === "string")) {
+    return raw.map((v) => v.trim());
+  }
+  return undefined;
 }
 
 async function deny(reply: FastifyReply, status: 401 | 403, message: string): Promise<void> {
@@ -94,17 +109,25 @@ async function deny(reply: FastifyReply, status: 401 | 403, message: string): Pr
 
 /** Authorize a call against the operation's OR'd security clauses. A bearer
  * token that is present is verified once, before any clause is consulted: one
- * that fails verification, or lacks \`sub\`, is refused with 401 and never
- * falls through to an empty clause (\`{}\`). A valid token is admitted, with
- * its claims, by the first non-empty clause its entitlements satisfy. Failing
- * that, an empty clause admits the call as anonymous, with no claims, token or
- * not. Otherwise the call is refused: 401 without a token, 403 with one. */
+ * that fails verification, lacks \`sub\` or carries a malformed
+ * \`entitlements\` claim is refused with 401 and never falls through to an
+ * empty clause (\`{}\`). A valid token is admitted, with its claims, by the
+ * first non-empty clause its entitlements satisfy. Failing that, an empty
+ * clause admits the call as anonymous, with no claims, token or not. Otherwise
+ * the call is refused: 401 without a token, 403 with one. */
 async function verifyOperation(
   request: FastifyRequest,
   reply: FastifyReply,
   methodName: string,
 ): Promise<void> {
-  const clauses = operationSecurity[methodName] ?? [];
+  // Every generated route has an entry. A missing one is a generator defect:
+  // refuse rather than admit. Object.hasOwn keeps a methodName such as
+  // "constructor" from reaching Object.prototype.
+  if (!Object.hasOwn(operationSecurity, methodName)) {
+    request.log.error({ methodName }, "[auth] no operationSecurity entry; refusing");
+    return deny(reply, 401, "operation has no generated security entry");
+  }
+  const clauses = operationSecurity[methodName]!;
   if (clauses.length === 0) {
     request.claims = {};
     return;
@@ -123,8 +146,12 @@ async function verifyOperation(
     }
 
     // The host gate authorizes on entitlements, never on scope (what the
-    // client asked for). A missing or null claim is an empty list.
-    const held = { [SCHEME]: entitlementsFromClaims(claims, "entitlements") };
+    // client asked for).
+    const entitlements = entitlementsFromClaims(claims);
+    if (entitlements === undefined) {
+      return deny(reply, 401, "invalid claim: entitlements");
+    }
+    const held = { [SCHEME]: entitlements };
     for (const clause of clauses) {
       if (Object.keys(clause).length === 0) continue;
       const required = Object.values(clause).flat();
@@ -148,15 +175,19 @@ async function verifyOperation(
   return deny(reply, 403, "entitlements do not match requirements");
 }
 
+/** Authorize at onRequest, before the body is parsed or validated, so an
+ * unauthenticated caller never learns the body schema. Every generated route
+ * carries a methodName; a route without one (the 404 handler, a route the
+ * author added) is not the generator's and passes untouched. */
 async function authPlugin(app: FastifyInstance): Promise<void> {
-  app.addHook("preHandler", async (request, reply) => {
+  app.addHook("onRequest", async (request, reply) => {
     const methodName = request.routeOptions.config.methodName;
     if (!methodName) return;
     await verifyOperation(request, reply, methodName);
   });
 }
 
-// fastify-plugin marks the plugin as non-encapsulating so the preHandler hook
+// fastify-plugin marks the plugin as non-encapsulating so the onRequest hook
 // applies to routes registered as siblings (e.g. by the generated routes plugin).
 export const auth = fp(authPlugin, { name: "kdex-auth", fastify: "5.x" });
 `;

@@ -9,7 +9,7 @@ import { emitAuth } from "./emit/auth.js";
 import { emitCustom } from "./emit/custom.js";
 import { emitDefault } from "./emit/default.js";
 import { emitMain } from "./emit/main.js";
-import { emitPackageJson } from "./emit/package-json.js";
+import { emitPackageJson, raiseEntitlementsFloor } from "./emit/package-json.js";
 import { emitProjectToml } from "./emit/project-toml.js";
 import { emitRoutes } from "./emit/routes.js";
 import { emitSchemas } from "./emit/schemas.js";
@@ -75,6 +75,15 @@ export async function run(opts: RunOptions): Promise<void> {
   ];
 
   mkdirSync(opts.target, { recursive: true });
+  // package.json is preserved on regeneration, but not below the floor the
+  // generated auth needs.
+  const pkgPath = resolve(opts.target, "package.json");
+  if (existsSync(pkgPath)) {
+    const raised = raiseEntitlementsFloor(readFileSync(pkgPath, "utf8"), (line) => {
+      process.stderr.write(`${line}\n`);
+    });
+    if (raised !== undefined) writeFileSync(pkgPath, raised, "utf8");
+  }
   for (const f of files) {
     await writeFile(opts.target, f);
   }

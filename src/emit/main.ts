@@ -4,7 +4,7 @@ import { GEN_BANNER } from "./helpers.js";
 /** Emit `src/main.ts` — Fastify bootstrap, logger, optional auth plugin, routes
  * registration, graceful shutdown, and `listen()`. Always overwritten. */
 export function emitMain(ir: IR): string {
-  const useAuth = ir.securityFlags.hasSecurity;
+  const useAuth = ir.hasSecurity;
   return `${GEN_BANNER}
 
 import Fastify from "fastify";

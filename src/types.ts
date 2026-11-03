@@ -18,22 +18,12 @@ export const HTTP_METHODS: readonly HttpMethod[] = [
   "trace",
 ] as const;
 
-/** Subset of OpenAPI security scheme variants this generator supports. */
-export type SecurityScheme =
-  | { kind: "bearer"; bearerFormat?: string }
-  | { kind: "oauth2"; flows: unknown }
-  | { kind: "openIdConnect"; openIdConnectUrl?: string }
-  | { kind: "apiKey"; in: "header" | "query" | "cookie"; name: string };
-
-export interface SecurityFlags {
-  hasSecurity: boolean;
-  bearer: boolean;
-  oauth2: boolean;
-  openIdConnect: boolean;
-  apiKeyHeader: boolean;
-  apiKeyQuery: boolean;
-  apiKeyCookie: boolean;
-}
+/** The one security scheme a generated function knows: the host-minted JWT
+ * (FAT) presented as a bearer token. The parser rewrites every security
+ * alternative to it (see `bearerOnly`); the emitted auth plugin keys
+ * entitlements and requirements under it. kdex-fngogen's counterpart is
+ * `bearerSchemeName` in cmd/prepare_security.go. */
+export const BEARER_SCHEME = "bearer";
 
 /** A single requirement clause (AND of scheme→scopes). Multiple clauses on
  * an operation are OR'd. */
@@ -80,6 +70,7 @@ export interface IR {
   /** Component schemas keyed by name (the part after `#/components/schemas/`). */
   schemas: Record<string, unknown>;
   operations: Operation[];
-  securitySchemes: Record<string, SecurityScheme>;
-  securityFlags: SecurityFlags;
+  /** True when some operation has a non-empty security alternative, so the
+   * function needs the auth plugin. */
+  hasSecurity: boolean;
 }
